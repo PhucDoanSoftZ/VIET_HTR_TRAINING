@@ -1,8 +1,9 @@
 import json
 from pathlib import Path
 import pytest
-from htrtrain.checkpoints import CheckpointError, manifest, seal_checkpoint, validate_adapter, validate_resume
+from htrtrain.checkpoints import CheckpointError, latest_valid_checkpoint, manifest, prune_completed_checkpoints, seal_checkpoint, validate_adapter, validate_resume
 from htrtrain.config import load_config
+from htrtrain.dataset import check_data
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -105,3 +106,43 @@ def test_invalid_marker_schema_rejected(tiny_data, tmp_path):
     (folder / "COMPLETE.json").write_text("[]")
     with pytest.raises(CheckpointError, match="must be an object"):
         validate_resume(folder, cfg)
+
+
+def test_audit_fingerprints_reuse_decoded_pixels(tiny_data):
+    cfg = config_for(tiny_data)
+    report = check_data(tiny_data, ("train", "validation"))
+    assert manifest(cfg, report["fingerprints"])["fingerprints"] == manifest(cfg)["fingerprints"]
+
+
+def test_latest_resume_skips_corrupt_newer_checkpoint(tiny_data, tmp_path):
+    cfg = config_for(tiny_data)
+    root = tmp_path / "qwen3vl_4b"
+    run = root / "run"
+    run.mkdir(parents=True)
+    good = run / "checkpoint-7500"
+    checkpoint(good, cfg)
+    bad = run / "checkpoint-8000"
+    checkpoint(bad, cfg)
+    (bad / "trainer_state.json").write_text('{"global_step":8000}', encoding="utf-8")
+    seal_checkpoint(bad)
+    (bad / "optimizer.pt").write_bytes(b"corrupt")
+    chosen, info = latest_valid_checkpoint(root, cfg, manifest(cfg))
+    assert chosen == good and info["global_step"] == 7500
+    (good / "optimizer.pt").write_bytes(b"corrupt")
+    with pytest.raises(CheckpointError, match="refusing to restart"):
+        latest_valid_checkpoint(root, cfg, manifest(cfg))
+
+
+def test_prune_only_sealed_and_keep_best(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    for step in (100, 200, 300, 400):
+        folder = run / f"checkpoint-{step}"
+        folder.mkdir()
+        if step != 200:
+            (folder / "COMPLETE.json").write_text("{}")
+    removed = prune_completed_checkpoints(run, 1, str(run / "checkpoint-100"))
+    assert [p.name for p in removed] == ["checkpoint-300"]
+    assert (run / "checkpoint-100").exists() # Best remains usable.
+    assert (run / "checkpoint-200").exists() # Interrupted save is never pruned.
+    assert (run / "checkpoint-400").exists() # Latest remains usable.

@@ -1,8 +1,6 @@
 import json
-from pathlib import Path
 
 import pytest
-from PIL import Image
 
 from htrtrain.cli import main
 from htrtrain.dataset import DatasetError, check_data, load_split
@@ -15,6 +13,7 @@ def test_prepare_preserves_labels_and_image_bytes(tiny_data, tmp_path):
     row = json.loads(train_file.read_text(encoding="utf-8"))
     row["text"] = original
     row["source_id"] = "document-1"
+    row["proper_names"] = [original.split(",")[0].strip()]
     train_file.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
     source_bytes = (tiny_data / "images/train.png").read_bytes()
     source_json = train_file.read_bytes()
@@ -26,6 +25,7 @@ def test_prepare_preserves_labels_and_image_bytes(tiny_data, tmp_path):
     prepared = load_split(destination, "train")[0]
     assert prepared.text == original
     assert prepared.source_id == "document-1"
+    assert prepared.proper_names == tuple(row["proper_names"])
     assert prepared.image.read_bytes() == source_bytes
     assert train_file.read_bytes() == source_json
     assert check_data(destination)["ok"]

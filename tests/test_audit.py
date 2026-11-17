@@ -64,6 +64,7 @@ def test_training_safety_settings():
     assert args["remove_unused_columns"] is False and args["save_only_model"] is False
     assert args["bf16"] is True and args["fp16"] is False
     assert args["logging_nan_inf_filter"] is False
+    assert args["save_total_limit"] is None # Prune only after a checkpoint is sealed.
     assert training_kwargs(cfg, {"bf16": False}, Path("out"), True)["max_steps"] == 1
 
 

@@ -31,11 +31,12 @@ def test_trainable_selection_and_freeze_policy():
     assert check_trainable(TinyParameters(vision=False), frozen)["trainable_parameters"] == 2
 
 
-def test_loader_passes_revision_quantization_and_lora_settings(monkeypatch):
+@pytest.mark.parametrize("size,vision", [("4b", True), ("8b", False), ("32b", False)])
+def test_loader_passes_revision_quantization_and_lora_settings(monkeypatch, size, vision):
     import sys
     calls = {}
     model = SimpleNamespace(config=SimpleNamespace(model_type="qwen3_vl"), is_loaded_in_4bit=True,
-                            hf_device_map={"": 0}, named_parameters=TinyParameters().named_parameters)
+                            hf_device_map={"": 0}, named_parameters=TinyParameters(vision=vision).named_parameters)
     processor = SimpleNamespace(image_processor=SimpleNamespace(size={}), chat_template="Qwen template", tokenizer=SimpleNamespace(pad_token_id=0))
 
     class Backend:
@@ -56,7 +57,7 @@ def test_loader_passes_revision_quantization_and_lora_settings(monkeypatch):
     monkeypatch.setitem(sys.modules, "unsloth", SimpleNamespace(FastVisionModel=Backend))
     monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(BitsAndBytesConfig=lambda **kwargs: kwargs))
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
-    cfg = load_config(ROOT / "configs/qwen3vl_4b.yaml", ["model.revision=fixed-sha", "lora.dropout=0.05"])
+    cfg = load_config(ROOT / f"configs/qwen3vl_{size}.yaml", ["model.revision=fixed-sha", "lora.dropout=0.05"])
     loaded, _ = load_base(cfg, True)
     assert loaded is model
     assert calls["loader"]["revision"] == "fixed-sha"
@@ -64,6 +65,38 @@ def test_loader_passes_revision_quantization_and_lora_settings(monkeypatch):
     assert calls["lora"]["lora_dropout"] == 0.05
     assert calls["loader"]["device_map"] == {"": 0}
     assert calls["lora"]["use_gradient_checkpointing"] == cfg.section("model")["gradient_checkpointing"]
+    assert calls["lora"]["finetune_vision_layers"] is vision
+    assert calls["model_id"] == cfg.model_id
+
+
+def test_32b_official_base_gets_4bit_quantization(monkeypatch):
+    import sys
+    calls = {}
+    model = SimpleNamespace(config=SimpleNamespace(model_type="qwen3_vl"), is_loaded_in_4bit=True,
+                            hf_device_map={"": 0}, named_parameters=TinyParameters(vision=False).named_parameters)
+    processor = SimpleNamespace(image_processor=SimpleNamespace(size={}), chat_template="Qwen template", tokenizer=SimpleNamespace(pad_token_id=0))
+
+    class Backend:
+        @staticmethod
+        def from_pretrained(name, **kwargs):
+            calls.update(kwargs)
+            return model, processor
+
+        @staticmethod
+        def get_peft_model(model, **kwargs):
+            return model
+
+        @staticmethod
+        def for_training(model, **kwargs):
+            return model
+
+    monkeypatch.setitem(sys.modules, "unsloth", SimpleNamespace(FastVisionModel=Backend))
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(BitsAndBytesConfig=lambda **kwargs: kwargs))
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    cfg = load_config(ROOT / "configs/qwen3vl_32b.yaml", ["model.id=Qwen/Qwen3-VL-32B-Instruct"])
+    load_base(cfg, True)
+    assert calls["quantization_config"]["bnb_4bit_quant_type"] == "nf4"
+    assert calls["quantization_config"]["bnb_4bit_use_double_quant"] is True
 
 
 @pytest.mark.parametrize("bad_shape", [False, True])

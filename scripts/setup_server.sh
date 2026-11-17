@@ -11,4 +11,4 @@ python -m pip install -e .
 python -m pip check
 mkdir -p outputs checkpoints data/viet_htr
 python -m pip freeze > outputs/environment-lock.txt
-python -m htrtrain doctor --config "${1:-configs/qwen3vl_8b.yaml}"
+python -m htrtrain doctor --config "${1:-configs/qwen3vl_32b.yaml}"

@@ -16,23 +16,23 @@ data:
   resize_policy: error # Explicitly choose downscale for an ablation.
   min_short_edge: 16
 hardware:
-  min_free_vram_gb: 24
+  min_free_vram_gb: 24 # Gate for one selected GPU, not pooled VRAM.
   min_free_ram_gb: 8
   min_free_disk_gb: 30
 lora:
-  rank: 16
+  rank: 8
   alpha: 16
   dropout: 0.0
   target_modules: null
-  vision_layers: true
+  vision_layers: false
   language_layers: true
   attention_modules: true
   mlp_modules: true
 training:
   batch_size: 1
-  gradient_accumulation_steps: 4
+  gradient_accumulation_steps: 8
   epochs: 2
-  learning_rate: 0.0002
+  learning_rate: 0.00005
   warmup_steps: 50
   optimizer: adamw_8bit
   scheduler: linear
@@ -49,7 +49,7 @@ training:
   dataloader_workers: 0
   pin_memory: true
   best_metric: eval_loss # Use eval_cer with a fixed validation_ocr_limit for OCR selection.
-  validation_ocr_limit: 0
+  validation_ocr_limit: 128
 inference:
   prompt: "Transcribe the Vietnamese handwriting in this image exactly. Return only the transcription."
   max_new_tokens: 256
@@ -58,6 +58,6 @@ inference:
   repetition_penalty: 1.0
 evaluation:
   normalization: nfc_whitespace
-  without_diacritics: false
+  without_diacritics: true
 logging:
   debug: false

@@ -13,7 +13,7 @@ from .config import Config
 def doctor(config: Config) -> dict:
     report = {"ok": True, "errors": [], "warnings": [], "gpu": [], "packages": {}}
     if int(os.environ.get("WORLD_SIZE", "1")) != 1:
-        report["errors"].append("Distributed training is unsupported; launch one process on one visible GPU")
+        report["errors"].append("Distributed Qwen3-VL training is not verified in this repository; DDP replicates the full 32B model per GPU and does not pool VRAM. Launch one process, or use the 8B config on a suitable GPU")
     for package in ("torch", "transformers", "trl", "unsloth", "unsloth_zoo", "peft", "accelerate", "safetensors", "bitsandbytes"):
         try:
             report["packages"][package] = importlib.metadata.version(package)
@@ -24,11 +24,12 @@ def doctor(config: Config) -> dict:
         report["torch_cuda"] = torch.version.cuda
         report["bf16"] = bool(torch.cuda.is_available() and torch.cuda.is_bf16_supported())
         if torch.cuda.is_available():
-            if torch.cuda.device_count() != 1:
-                report["errors"].append("Select exactly one GPU via CUDA_VISIBLE_DEVICES before launching")
+            report["selected_gpu"] = torch.cuda.current_device()
             for i in range(torch.cuda.device_count()):
                 free, total = torch.cuda.mem_get_info(i)
                 report["gpu"].append({"index": i, "name": torch.cuda.get_device_name(i), "free_gb": round(free / 2**30, 2), "total_gb": round(total / 2**30, 2)})
+            if torch.cuda.device_count() > 1:
+                report["warnings"].append(f"Using CUDA device {report['selected_gpu']} only; other visible GPUs are not pooled. Set CUDA_VISIBLE_DEVICES to choose a different device")
     except ImportError:
         report["torch_cuda"] = None
         report["bf16"] = False
@@ -59,8 +60,9 @@ def doctor(config: Config) -> dict:
                 report["errors"].append(f"{label} path not writable: {path}: {exc}")
     if not report["gpu"]:
         report["errors"].append("No CUDA GPU visible to PyTorch")
-    elif max(g["free_gb"] for g in report["gpu"]) < config.section("hardware")["min_free_vram_gb"]:
-        report["errors"].append(f"Free VRAM below configured minimum {config.section('hardware')['min_free_vram_gb']} GiB")
+    elif report["gpu"][report["selected_gpu"]]["free_gb"] < config.section("hardware")["min_free_vram_gb"]:
+        advice = "Select a larger GPU or use configs/qwen3vl_8b.yaml" if config.model_key == "qwen3vl_32b" else "Select a GPU with more free memory"
+        report["errors"].append(f"Selected GPU {report['selected_gpu']} has {report['gpu'][report['selected_gpu']]['free_gb']} GiB free; minimum is {config.section('hardware')['min_free_vram_gb']} GiB. {advice}")
     if not report["nvidia_smi"]:
         report["warnings"].append("nvidia-smi unavailable")
     for package in ("torch", "transformers", "trl", "unsloth", "unsloth_zoo", "peft", "accelerate", "safetensors", "bitsandbytes"):

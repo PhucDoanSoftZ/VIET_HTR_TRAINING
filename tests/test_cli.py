@@ -1,12 +1,14 @@
 from pathlib import Path
-from htrtrain.cli import main
+import pytest
+from htrtrain.cli import main, parser
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_cpu_dry_run_uses_fixture_only(tiny_data, capsys):
-    code = main(["train", "--config", str(ROOT / "configs/qwen3vl_8b.yaml"),
+@pytest.mark.parametrize("size", ("8b", "32b"))
+def test_cpu_dry_run_uses_fixture_only(tiny_data, capsys, size):
+    code = main(["train", "--config", str(ROOT / f"configs/qwen3vl_{size}.yaml"),
                  "--set", f"paths.data_dir={tiny_data.as_posix()}", "--dry-run"])
     assert code == 0
     assert '"dry_run": true' in capsys.readouterr().out
@@ -15,6 +17,10 @@ def test_cpu_dry_run_uses_fixture_only(tiny_data, capsys):
 def test_data_check_fixture(tiny_data, capsys):
     assert main(["data-check", "--data-dir", str(tiny_data)]) == 0
     assert '"test_overlap_images": 0' in capsys.readouterr().out
+
+
+def test_eval_defaults_to_validation():
+    assert parser().parse_args(["eval", "--config", "configs/qwen3vl_32b.yaml"]).split == "validation"
 
 
 def test_dry_run_does_not_read_beyond_two_records(tiny_data):

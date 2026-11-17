@@ -60,7 +60,7 @@ def gpu_memory(torch):
 def callbacks(log, config, contract, resume_info=None):
     from transformers import TrainerCallback
     import torch
-    from .checkpoints import guard_restored_state, seal_checkpoint, write_manifest
+    from .checkpoints import guard_restored_state, prune_completed_checkpoints, seal_checkpoint, write_manifest
 
     class Events(TrainerCallback):
         def __init__(self):
@@ -93,7 +93,10 @@ def callbacks(log, config, contract, resume_info=None):
             path = Path(args.output_dir) / f"checkpoint-{state.global_step}"
             write_manifest(path, config, contract)
             seal_checkpoint(path)
+            removed = prune_completed_checkpoints(Path(args.output_dir), config.section("training")["save_total_limit"], state.best_model_checkpoint)
             log.emit("checkpoint_complete", component="checkpoint", step=state.global_step, sealing_seconds=time.perf_counter() - start)
+            for old in removed:
+                log.emit("checkpoint_pruned", component="checkpoint", step=state.global_step, path=str(old))
 
         def on_evaluate(self, args, state, control, metrics=None, **kwargs):
             log.emit("evaluation_complete", component="evaluation", step=state.global_step, **(metrics or {}))

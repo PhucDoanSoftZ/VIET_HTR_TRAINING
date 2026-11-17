@@ -6,6 +6,8 @@ import importlib.metadata
 import json
 from pathlib import Path
 import platform
+import re
+import shutil
 
 from .config import Config
 from .dataset import load_split, pixel_digest
@@ -51,16 +53,19 @@ def versions() -> dict:
             result[package] = None
     return result
 
-def manifest(config: Config) -> dict:
+def manifest(config: Config, fingerprints: dict[str, str] | None = None) -> dict:
     # Ordered image pixels and raw labels are invariant to relocating Kaggle paths.
-    fingerprints = {}
-    for split in ("train", "validation"):
-        digest = hashlib.sha256()
-        for sample in load_split(config.data_dir, split):
-            payload = [pixel_digest(sample.image)[0], sample.text, sample.source_id]
-            digest.update(json.dumps(payload, ensure_ascii=False).encode())
-            digest.update(b"\n")
-        fingerprints[split] = digest.hexdigest()
+    if fingerprints is None:
+        fingerprints = {}
+        for split in ("train", "validation"):
+            digest = hashlib.sha256()
+            for sample in load_split(config.data_dir, split):
+                payload = [pixel_digest(sample.image)[0], sample.text, sample.source_id, sample.proper_names]
+                digest.update(json.dumps(payload, ensure_ascii=False).encode())
+                digest.update(b"\n")
+            fingerprints[split] = digest.hexdigest()
+    else:
+        fingerprints = {split: fingerprints[split] for split in ("train", "validation")}
     return {"schema": 2, "model_id": config.model_id, "model": config.section("model"),
             "lora": config.section("lora"), "training": config.section("training"),
             "data": config.section("data"), "prompt": config.section("inference")["prompt"],
@@ -151,3 +156,37 @@ def validate_resume(path: Path, config: Config, current: dict | None = None) -> 
         except (OSError, KeyError, json.JSONDecodeError) as exc:
             raise CheckpointError("Best checkpoint is incomplete/unsealed") from exc
     return {"global_step": step, "best_model_checkpoint": str(best_path) if best_path else None, "contract": saved}
+
+
+def latest_valid_checkpoint(root: Path, config: Config, current: dict) -> tuple[Path, dict]:
+    """Choose the most recently sealed compatible checkpoint, skipping interrupted saves."""
+    candidates = [p for run in root.iterdir() if run.is_dir() for p in run.iterdir()
+                  if p.is_dir() and not p.is_symlink() and re.fullmatch(r"checkpoint-[1-9][0-9]*", p.name)
+                  and (p / "COMPLETE.json").is_file()] if root.is_dir() else []
+    candidates.sort(key=lambda p: ((p / "COMPLETE.json").stat().st_mtime_ns, p.name), reverse=True)
+    for path in candidates:
+        try:
+            return path, validate_resume(path, config, current)
+        except (CheckpointError, OSError):
+            continue
+    raise CheckpointError(f"No valid compatible checkpoint under {root}; refusing to restart at step 0")
+
+
+def prune_completed_checkpoints(run_dir: Path, keep: int, best: str | None = None) -> list[Path]:
+    """Prune only sealed older checkpoints after the new checkpoint has been sealed."""
+    if keep < 1:
+        raise ValueError("keep must be positive")
+    if not run_dir.is_dir():
+        return []
+    completed = [p for p in run_dir.iterdir() if p.is_dir() and not p.is_symlink()
+                 and re.fullmatch(r"checkpoint-[1-9][0-9]*", p.name) and (p / "COMPLETE.json").is_file()]
+    completed.sort(key=lambda p: int(p.name.split("-")[1]), reverse=True)
+    protected = {p.resolve() for p in completed[:keep]}
+    if best:
+        protected.add(Path(best).resolve())
+    removed = []
+    for path in completed:
+        if path.resolve() not in protected and path.resolve().parent == run_dir.resolve():
+            shutil.rmtree(path)
+            removed.append(path)
+    return removed

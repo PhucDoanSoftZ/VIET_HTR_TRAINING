@@ -22,6 +22,18 @@ def test_invalid_config_rejected():
 
 
 def test_unverified_models_rejected():
-    for name in ("qwen3vl_32b", "gemma4"):
+    for name in ("gemma4",):
         with pytest.raises(UnsupportedModelError):
             require_supported(load_config(ROOT / f"configs/{name}.yaml"))
+
+
+def test_32b_config_and_model_identity():
+    cfg = load_config(ROOT / "configs/qwen3vl_32b.yaml")
+    require_supported(cfg)
+    assert cfg.model_id == "unsloth/Qwen3-VL-32B-Instruct-unsloth-bnb-4bit"
+    assert cfg.section("lora")["vision_layers"] is False
+    assert cfg.section("training")["learning_rate"] == 2e-5
+    assert cfg.section("training")["best_metric"] == "eval_loss"
+    assert load_config(cfg.path, ["training.learning_rate=0.00005", "training.best_metric=eval_cer"]).section("training")["best_metric"] == "eval_cer"
+    with pytest.raises(ConfigError, match="architecture/size"):
+        load_config(cfg.path, ["model.id=unsloth/Qwen3-VL-8B-Instruct-unsloth-bnb-4bit"])

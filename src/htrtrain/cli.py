@@ -21,7 +21,7 @@ def parser() -> argparse.ArgumentParser:
             sp.add_argument("--resume", type=Path)
             sp.add_argument("--warm-start-from-adapter", type=Path)
         elif command == "eval":
-            sp.add_argument("--split", choices=["test", "validation"], default="test")
+            sp.add_argument("--split", choices=["test", "validation"], default="validation")
             sp.add_argument("--limit", type=int)
             sp.add_argument("--adapter", type=Path)
             sp.add_argument("--compare-base", action="store_true")

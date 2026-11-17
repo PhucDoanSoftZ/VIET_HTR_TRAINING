@@ -19,6 +19,7 @@ class Sample:
     split: str
     line: int
     source_id: str | None = None
+    proper_names: tuple[str, ...] = ()
 
 def jsonl_path(root: Path, split: str) -> Path:
     if split not in {"train", "validation", "test"}:
@@ -76,7 +77,10 @@ def iter_split(root: Path, split: str):
             origin = row.get("source_id", row.get("original_id"))
             if origin is not None and not isinstance(origin, str):
                 raise DatasetError(f"{split}:{line}: source_id must be string")
-            yield Sample(resolve_image(root, image), text, split, line, origin)
+            names = row.get("proper_names", [])
+            if not isinstance(names, list) or not all(isinstance(name, str) and name.strip() and name in text for name in names):
+                raise DatasetError(f"{split}:{line}: proper_names must be a list of nonempty substrings of text")
+            yield Sample(resolve_image(root, image), text, split, line, origin, tuple(names))
 
 def load_split(root: Path, split: str, limit: int | None = None) -> list[Sample]:
     from itertools import islice
@@ -98,13 +102,15 @@ def pixel_digest(path: Path) -> tuple[str, tuple[int, int], str]:
 
 def check_data(root: Path, splits=("train", "validation", "test"), limit=None, settings=None) -> dict:
     report = {"root": str(root), "splits": {}, "overlap_records": 0, "test_overlap_images": 0,
-              "limited": limit is not None, "provenance_check": "source_id/original_id when present; transformed derivatives require provenance"}
+              "limited": limit is not None, "fingerprints": {},
+              "provenance_check": "source_id/original_id when present; transformed derivatives require provenance"}
     seen: dict[tuple[str, str], str] = {}
     for split in splits:
         samples = load_split(root, split, limit)
         issues, modes = Counter(), Counter()
         dimensions = []
         provenance = 0
+        split_fingerprint = hashlib.sha256()
         for sample in samples:
             if not sample.image.is_file():
                 issues["missing_image"] += 1
@@ -114,6 +120,9 @@ def check_data(root: Path, splits=("train", "validation", "test"), limit=None, s
             except (OSError, ValueError, UnidentifiedImageError):
                 issues["corrupt_image"] += 1
                 continue
+            payload = [digest, sample.text, sample.source_id, sample.proper_names]
+            split_fingerprint.update(json.dumps(payload, ensure_ascii=False).encode())
+            split_fingerprint.update(b"\n")
             keys = [("pixels", digest), ("path", str(sample.image))]
             if sample.source_id:
                 keys.append(("source", sample.source_id))
@@ -142,6 +151,7 @@ def check_data(root: Path, splits=("train", "validation", "test"), limit=None, s
             "provenance_records": provenance, "min_width": min((s[0] for s in dimensions), default=0),
             "min_height": min((s[1] for s in dimensions), default=0),
             "max_aspect_ratio": max((max(s) / min(s) for s in dimensions), default=0)}
+        report["fingerprints"][split] = split_fingerprint.hexdigest()
     report["ok"] = not any(s["issues"] for s in report["splits"].values())
     return report
 

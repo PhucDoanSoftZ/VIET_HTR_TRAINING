@@ -13,6 +13,7 @@ class ConfigError(ValueError):
 SUPPORTED = {
     "qwen3vl_4b": "4B",
     "qwen3vl_8b": "8B",
+    "qwen3vl_32b": "32B",
 }
 
 DEFAULTS = {
@@ -108,7 +109,13 @@ def load_config(path: str | Path, overrides: list[str] | None = None) -> Config:
     import re
     if key in SUPPORTED:
         size = SUPPORTED[key]
-        if not re.fullmatch(rf"(?:Qwen|unsloth)/Qwen3-VL-{size}-Instruct(?:-(?:unsloth-)?bnb-4bit)?", model_id):
+        if key == "qwen3vl_32b":
+            valid_id = model_id in {"Qwen/Qwen3-VL-32B-Instruct",
+                                    "unsloth/Qwen3-VL-32B-Instruct-unsloth-bnb-4bit",
+                                    "unsloth/Qwen3-VL-32B-Instruct-bnb-4bit"}
+        else:
+            valid_id = bool(re.fullmatch(rf"(?:Qwen|unsloth)/Qwen3-VL-{size}-Instruct(?:-(?:unsloth-)?bnb-4bit)?", model_id))
+        if not valid_id:
             raise ConfigError(f"model.id does not match {key} Instruct architecture/size")
     training, lora, inf, hw = (raw[x] for x in ("training", "lora", "inference", "hardware"))
     for name in ("batch_size", "gradient_accumulation_steps", "epochs", "save_steps", "eval_steps", "logging_steps", "max_seq_length"):

@@ -1,5 +1,4 @@
 import json
-from pathlib import Path
 import pytest
 from htrtrain.dataset import DatasetError, VisionDataset, check_data, load_split, resolve_image
 

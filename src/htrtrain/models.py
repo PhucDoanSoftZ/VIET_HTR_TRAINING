@@ -1,4 +1,4 @@
-"""Qwen3-VL Unsloth loading with explicit single-GPU placement and PEFT checks."""
+"""Qwen3-VL 4B/8B/32B Unsloth loading with explicit GPU placement and PEFT checks."""
 from pathlib import Path
 from importlib import import_module
 from .config import Config, SUPPORTED
@@ -20,7 +20,7 @@ def _gpu_dependency(name: str):
 
 def require_supported(config: Config):
     if config.model_key not in SUPPORTED:
-        raise UnsupportedModelError(f"{config.model_key}: backend pending verification; use Qwen3-VL 4B/8B")
+        raise UnsupportedModelError(f"{config.model_key}: backend pending verification; use Qwen3-VL 4B/8B/32B")
 
 def configure_processor(processor, config):
     if getattr(processor, "image_processor", None) is None or not getattr(processor, "chat_template", None):
@@ -52,6 +52,11 @@ def load_base(config: Config, for_training=False):
     placement = getattr(model, "hf_device_map", {})
     if any(str(device) in {"cpu", "disk"} for device in placement.values()):
         raise RuntimeError("CPU/disk offload is forbidden; select a larger GPU or smaller model")
+    selected = torch.cuda.current_device()
+    for device in placement.values():
+        device_name = str(device)
+        if (isinstance(device, int) and device != selected) or (device_name.startswith("cuda:") and device_name != f"cuda:{selected}"):
+            raise RuntimeError("Model weights span multiple GPUs unexpectedly; this Trainer path requires one complete model replica")
     processor = configure_processor(processor, config)
     if for_training:
         lora = config.section("lora")

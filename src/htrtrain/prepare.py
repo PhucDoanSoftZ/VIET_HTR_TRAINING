@@ -58,6 +58,8 @@ def prepare_data(source: Path, destination: Path) -> dict:
                     row = {"image_path": f"images/{name}", "text": sample.text}
                     if sample.source_id is not None:
                         row["source_id"] = sample.source_id
+                    if sample.proper_names:
+                        row["proper_names"] = list(sample.proper_names)
                     writer.write(json.dumps(row, ensure_ascii=False) + "\n")
             counts[split] = count
         staged_report = check_data(stage, SPLITS)

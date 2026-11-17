@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import gc
 from pathlib import Path
+import re
 import unicodedata
 
 import jiwer
@@ -34,6 +35,19 @@ def error_counts(ref, prediction, policy="nfc_whitespace"):
     alignment = jiwer.process_characters(normalize(ref, policy), normalize(prediction, policy))
     return {"insertions": alignment.insertions, "deletions": alignment.deletions, "substitutions": alignment.substitutions}
 
+
+def diagnostic_counts(ref: str, prediction: str, proper_names: tuple[str, ...] = (), policy="nfc_whitespace") -> dict:
+    """Count observable errors; proper names require explicit reference annotations."""
+    reference = normalize(ref, policy)
+    hypothesis = normalize(prediction, policy)
+    digits = "".join(re.findall(r"\d+", reference))
+    predicted_digits = "".join(re.findall(r"\d+", hypothesis))
+    return {**error_counts(ref, prediction, policy),
+            "has_digits": bool(digits or predicted_digits),
+            "digit_sequence_exact": digits == predicted_digits if digits or predicted_digits else None,
+            "proper_name_count": len(proper_names),
+            "proper_name_exact_count": sum(normalize(name, policy) in hypothesis for name in proper_names)}
+
 def benchmark(config: Config, split: str, limit: int | None, adapter: Path | None, compare_base: bool) -> dict:
     require_supported(config)
     if split not in {"test", "validation"}:
@@ -57,16 +71,34 @@ def benchmark(config: Config, split: str, limit: int | None, adapter: Path | Non
         model, processor = load_base(config) if variant == "base" else load_adapter(config, adapter)
         try:
             predictions = []
+            totals = {"insertions": 0, "deletions": 0, "substitutions": 0,
+                      "digit_lines": 0, "digit_sequence_exact_lines": 0,
+                      "proper_names": 0, "proper_names_exact": 0}
             commits[variant] = getattr(model.config, "_commit_hash", None)
             for sample, record in zip(samples, records):
                 result = predict(model, processor, sample.image, config, details=True)
                 record[variant] = result["text"]
                 record[f"{variant}_hit_token_limit"] = result["hit_token_limit"]
-                for key, value in error_counts(sample.text, result["text"], evaluation["normalization"]).items():
+                for key, value in diagnostic_counts(sample.text, result["text"], sample.proper_names, evaluation["normalization"]).items():
                     record[f"{variant}_{key}"] = value
+                    if key in ("insertions", "deletions", "substitutions"):
+                        totals[key] += value
+                    elif key == "has_digits":
+                        totals["digit_lines"] += int(value)
+                    elif key == "digit_sequence_exact" and value is not None:
+                        totals["digit_sequence_exact_lines"] += int(value)
+                    elif key == "proper_name_count":
+                        totals["proper_names"] += value
+                    elif key == "proper_name_exact_count":
+                        totals["proper_names_exact"] += value
                 predictions.append(result["text"])
             refs = [s.text for s in samples]
             metrics[variant] = score(refs, predictions, evaluation["normalization"])
+            metrics[variant]["diagnostics"] = {
+                **totals,
+                "digit_sequence_exact_rate": totals["digit_sequence_exact_lines"] / totals["digit_lines"] if totals["digit_lines"] else None,
+                "proper_name_exact_rate": totals["proper_names_exact"] / totals["proper_names"] if totals["proper_names"] else None,
+            }
             if evaluation["without_diacritics"]:
                 metrics[variant]["without_diacritics"] = score(refs, predictions, evaluation["normalization"], True)
         finally:
@@ -82,6 +114,6 @@ def benchmark(config: Config, split: str, limit: int | None, adapter: Path | Non
                "commits": commits, "inference": config.section("inference"), "preprocessing": config.section("data"),
                "normalization": evaluation, "versions": versions(), "output": str(output),
                "adapter": str(adapter) if adapter else None,
-               "error_analysis": "Character insertions/deletions/substitutions do not establish hallucination intent; entity/modality analysis requires annotations"}
+               "error_analysis": "Insertions/deletions count added/omitted characters. Digit matching compares digit sequences. Proper-name exact match is reported only for annotated proper_names; it is case-sensitive substring matching. Accent-free CER/WER are separate diagnostics, not a count of accent mistakes."}
     atomic_json(output / "metrics.json", summary)
     return summary

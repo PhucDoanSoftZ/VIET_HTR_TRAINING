@@ -8,7 +8,7 @@ from pathlib import Path
 import signal
 import time
 
-from .checkpoints import atomic_json, manifest, validate_adapter, validate_resume, write_manifest
+from .checkpoints import atomic_json, latest_valid_checkpoint, manifest, validate_adapter, validate_resume, write_manifest
 from .collator import OCRCollator
 from .config import Config
 from .dataset import VisionDataset, check_data, load_split
@@ -20,7 +20,7 @@ def resolve_start(config, resume, warm_start):
     if resume and warm_start:
         raise ValueError("Choose --resume or --warm-start-from-adapter")
     if not resume and not warm_start:
-        resume = config.optional_path("resume_from")
+        resume = Path("latest") if config.section("paths").get("resume_from") == "latest" else config.optional_path("resume_from")
         warm_start = config.optional_path("warm_start_from_adapter")
     if resume and warm_start:
         raise ValueError("Choose exact resume or adapter warm start")
@@ -37,7 +37,7 @@ def training_kwargs(config, preflight, run_dir, smoke=False):
         optim=t["optimizer"], lr_scheduler_type=t["scheduler"], weight_decay=t["weight_decay"], max_grad_norm=t["max_grad_norm"],
         save_strategy="steps", eval_strategy="steps", save_steps=1 if smoke else t["save_steps"],
         eval_steps=1 if smoke else t["eval_steps"], logging_steps=1 if smoke else t["logging_steps"],
-        save_total_limit=t["save_total_limit"], save_only_model=False, save_safetensors=True,
+        save_total_limit=None, save_only_model=False, save_safetensors=True,
         load_best_model_at_end=not smoke, metric_for_best_model=t["best_metric"], greater_is_better=False,
         seed=t["seed"], data_seed=t["seed"], report_to="none", bf16=preflight["bf16"], fp16=not preflight["bf16"],
         gradient_checkpointing=bool(config.section("model")["gradient_checkpointing"]),
@@ -96,8 +96,13 @@ def train(config: Config, resume: Path | None = None, warm_start: Path | None = 
             # Bounded smoke fingerprints never scan the real dataset.
             contract = {"schema": 2, "mode": "gpu_smoke", "config": config.raw}
         else:
-            contract = manifest(config)
-        resume_info = validate_resume(resume, config, contract) if resume else None
+            contract = manifest(config, report["fingerprints"])
+        if resume == Path("latest"):
+            resume, resume_info = latest_valid_checkpoint(config.checkpoint_dir / config.model_key, config, contract)
+        else:
+            resume_info = validate_resume(resume, config, contract) if resume else None
+        metadata["source_checkpoint"] = str(resume or warm_start) if resume or warm_start else None
+        atomic_json(output / "run_manifest.json", metadata)
         stage = "model_load"
         model, processor = load_adapter(config, resume or warm_start, True) if resume or warm_start else load_base(config, True)
         runtime = {"model_commit": getattr(model.config, "_commit_hash", None),
@@ -142,7 +147,7 @@ def train(config: Config, resume: Path | None = None, warm_start: Path | None = 
             def evaluation_loop(self, *args, **kwargs):
                 output = super().evaluation_loop(*args, **kwargs)
                 count = config.section("training")["validation_ocr_limit"]
-                if count and not gpu_smoke:
+                if count:
                     from .evaluate import score
                     from .inference import predict
                     was_training = self.model.training
