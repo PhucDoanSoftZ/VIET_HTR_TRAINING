@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "viet-htr-training"
+version = "0.1.0"
+description = "Vietnamese handwriting OCR training and evaluation"
+requires-python = ">=3.10,<3.14"
+dependencies = ["PyYAML>=6,<7", "Pillow>=10,<12", "jiwer>=3,<5", "psutil>=5.9,<8"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10"]
+
+[project.scripts]
+htrtrain = "htrtrain.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

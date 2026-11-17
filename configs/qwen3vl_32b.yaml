@@ -1,0 +1,13 @@
+# Configuration reserved for planning; backend intentionally rejects this model.
+model:
+  key: qwen3vl_32b
+  id: Qwen/Qwen3-VL-32B-Instruct
+paths:
+  data_dir: data/viet_htr
+  checkpoint_dir: checkpoints
+  output_dir: outputs
+data: {max_pixels: 1048576}
+hardware: {min_free_vram_gb: 80, min_free_ram_gb: 16, min_free_disk_gb: 100}
+lora: {rank: 16, alpha: 16, vision_layers: true, language_layers: true, attention_modules: true, mlp_modules: true}
+training: {batch_size: 1, gradient_accumulation_steps: 4, epochs: 2, learning_rate: 0.0002, warmup_steps: 50, optimizer: adamw_8bit, scheduler: linear, save_steps: 250, eval_steps: 250, logging_steps: 10, save_total_limit: 3, max_seq_length: 2048, seed: 3407, early_stopping_patience: 0}
+inference: {prompt: "Transcribe the Vietnamese handwriting in this image exactly. Return only the transcription.", max_new_tokens: 256}
