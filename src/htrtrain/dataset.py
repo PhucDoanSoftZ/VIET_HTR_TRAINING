@@ -21,6 +21,7 @@ class Sample:
     source_ids: tuple[str, ...] = ()
     gt_verification: str | None = None
     quality_status: str | None = None
+    sample_group: str | None = None
 
 def jsonl_path(root: Path, split: str) -> Path:
     if split not in {"train", "validation", "test"}:
@@ -90,7 +91,7 @@ def iter_split(root: Path, split: str):
             quality = row.get('quality_status')
             if quality is not None and not isinstance(quality, str):
                 raise DatasetError(f"{split}:{line}: quality_status must be a string")
-            yield Sample(resolve_image(root, image), text, split, line, origin, tuple(names), tuple(sources), status, quality)
+            yield Sample(resolve_image(root, image), text, split, line, origin, tuple(names), tuple(sources), status, quality, row.get('sample_group'))
 
 def load_split(root: Path, split: str, limit: int | None = None) -> list[Sample]:
     from itertools import islice

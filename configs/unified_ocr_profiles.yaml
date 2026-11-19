@@ -2,10 +2,11 @@ source: data/v1_viethtr
 output: data/ocr_unified_v1
 seed: 3407
 profile: viet_only
-max_canvas_pixels: 1048576
+max_canvas_pixels: 2400000
 quotas:
-  composite_7_10: 40
-  composite_11_13: 20
+  train: {composite_7_10: 4000, composite_11_13: 3000}
+  validation: {composite_7_10: 40, composite_11_13: 30}
+  test: {composite_7_10: 40, composite_11_13: 30}
 profiles:
   full:
     single_line: 0.20

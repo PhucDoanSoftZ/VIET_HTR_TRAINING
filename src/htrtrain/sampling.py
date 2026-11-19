@@ -3,19 +3,36 @@ import math
 from collections import Counter
 import json
 
-from .dataset import jsonl_path
+from .dataset import Sample, iter_split
 
 GROUPS = frozenset({'single_line', 'composite_7_10', 'composite_11_13', 'legal_full_page'})
 
 
-def training_weights(root):
+def training_weights(root, samples: list[Sample] | None = None):
     path = root / 'sampling_config.json'
     if not path.is_file():
         return None
     config = json.loads(path.read_text(encoding='utf-8'))
-    with jsonl_path(root, 'train').open(encoding='utf-8') as stream:
-        groups = [json.loads(line)['sample_group'] for line in stream]
+    records = iter_split(root, 'train') if samples is None else samples
+    groups = [record.sample_group for record in records]
     return sample_weights(groups, config['profiles'], config['profile'])
+
+
+class WeightedTrainingMixin:
+    """Override only the Trainer's training sampler hook."""
+
+    def _get_train_sampler(self, train_dataset=None):
+        weights = self.ocr_training_weights
+        if weights is None:
+            return super()._get_train_sampler(train_dataset)
+        if self.args.world_size != 1:
+            raise ValueError("Unified weighted sampling currently requires single-process training")
+        dataset = self.train_dataset if train_dataset is None else train_dataset
+        if len(weights) != len(dataset):
+            raise ValueError("Training sampler weights do not match the dataset length")
+        import torch
+        generator = torch.Generator().manual_seed(self.args.seed)
+        return torch.utils.data.WeightedRandomSampler(weights, len(weights), generator=generator)
 
 
 def sample_weights(groups: list[str], profiles: dict, profile: str) -> list[float]:

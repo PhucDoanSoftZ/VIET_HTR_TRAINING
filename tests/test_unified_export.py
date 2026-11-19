@@ -26,7 +26,7 @@ def test_smoke_export_and_weights(tmp_path):
             draw.rectangle((65, 15, 85 + index, 44), fill=(split_index * 10, 0, 0))
             image.save(source / name)
             rows.append(dict(image_path=name, split=split, sample_type='original_line',
-                             gt_verification='provider_trusted_source', quality_status='info',
+                             gt_verification='provider_trusted_source', quality_status='warning',
                              source_id=f'{split}:{index}', text=f'Dòng {index}'))
         (source / f'{split}.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in rows))
     config = yaml.safe_load((ROOT / 'configs/unified_ocr_profiles.yaml').read_text())
@@ -45,6 +45,14 @@ def test_smoke_export_and_weights(tmp_path):
             assert all(a[3] < b[1] for a, b in zip(boxes, boxes[1:]))
             assert all(0 < x < x2 < row['width'] and 0 < y < y2 < row['height'] for x,y,x2,y2 in boxes)
     assert training_weights(out)[-2:] == [.45, .30]
+    config['output'] = str(tmp_path / 'quota')
+    config['quotas'] = {s: dict.fromkeys(builder.RANGES, 4) for s in builder.SPLITS}
+    assert builder.export(config)['counts']['train']['composite_11_13'] == 4
+    config['output'] = str(tmp_path / 'shortfall')
+    config['max_canvas_pixels'] = 1
+    import pytest
+    with pytest.raises(ValueError, match='shortfall'):
+        builder.export(config, smoke=True)
 
 
 def test_provisional_legal_excluded(tmp_path):

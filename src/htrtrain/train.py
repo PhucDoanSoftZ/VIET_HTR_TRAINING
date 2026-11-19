@@ -118,8 +118,8 @@ def train(config: Config, resume: Path | None = None, warm_start: Path | None = 
         atomic_json(output / "run_manifest.json", metadata)
         log.emit("model_loaded", component="model", **check_trainable(model, config))
         samples = load_split(config.data_dir, "train", limit=2 if gpu_smoke else None)
-        from .sampling import training_weights
-        weights = None if gpu_smoke else training_weights(config.data_dir)
+        from .sampling import WeightedTrainingMixin, training_weights
+        weights = None if gpu_smoke else training_weights(config.data_dir, samples)
         validation = load_split(config.data_dir, "validation", limit=2 if gpu_smoke else None)
         dataset = VisionDataset(samples, config.section("inference")["prompt"], config.section("data"))
         validation_dataset = VisionDataset(validation, config.section("inference")["prompt"], config.section("data"))
@@ -137,14 +137,8 @@ def train(config: Config, resume: Path | None = None, warm_start: Path | None = 
         # Probe the actual model processor, not a text-only surrogate.
         traced_collator([dataset[0]])
 
-        class OCRTrainer(Trainer):
-            def _get_train_sampler(self, train_dataset=None):
-                if weights is None:
-                    return super()._get_train_sampler(train_dataset)
-                if self.args.world_size != 1:
-                    raise ValueError("Unified weighted sampling currently requires single-process training")
-                generator = torch.Generator().manual_seed(self.args.seed)
-                return torch.utils.data.WeightedRandomSampler(weights, len(weights), generator=generator)
+        class OCRTrainer(WeightedTrainingMixin, Trainer):
+            ocr_training_weights = weights
 
             def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
                 inputs["use_cache"] = False

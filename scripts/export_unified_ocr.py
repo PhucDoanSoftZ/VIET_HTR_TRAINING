@@ -69,8 +69,11 @@ def export(config: dict, *, dry_run: bool = False, smoke: bool = False) -> dict:
     if output.exists() or output.is_relative_to(source) or source.is_relative_to(output):
         raise ValueError('Output must be new and separate from source')
     quotas = config['quotas']
-    if set(quotas) != set(RANGES) or any(type(n) is not int or n < 0 for n in quotas.values()):
-        raise ValueError('Provide nonnegative composite quotas by group')
+    if set(quotas) != set(SPLITS) or any(
+        not isinstance(q, dict) or set(q) != set(RANGES)
+        or any(type(n) is not int or n < 0 for n in q.values()) for q in quotas.values()
+    ):
+        raise ValueError('Provide nonnegative composite quotas by split and group')
     if type(config['seed']) is not int or type(config['max_canvas_pixels']) is not int or config['max_canvas_pixels'] <= 0:
         raise ValueError('Require an integer seed and positive integer canvas pixel budget')
     originals = {}
@@ -98,9 +101,14 @@ def export(config: dict, *, dry_run: bool = False, smoke: bool = False) -> dict:
     planned = {'originals': {s: len(v) for s, v in originals.items()}, 'quotas_per_split': quotas,
                'eligible_legal_pages': len(legal), 'profile': profile}
     if dry_run:
+        planned['eligible_source_crops'] = {s: sum(bool(r.get('source_id')) for r in v) for s, v in originals.items()}
+        planned['feasibility'] = {s: {g: ('insufficient distinct crops' if planned['eligible_source_crops'][s] < lo
+                                        else 'candidate pool sufficient; geometry checked during build')
+                                     for g, (lo, _) in RANGES.items()} for s in SPLITS}
+        planned['legal_blocker'] = None if any(row['split'] == 'train' for _, row in legal) else 'No eligible reviewed legal training pages'
         planned['missing_positive_groups'] = [
             group for group, weight in profiles[profile].items() if weight and
-            ((group in quotas and not quotas[group]) or
+            ((group in RANGES and not quotas['train'][group]) or
              (group == 'legal_full_page' and not any(row['split'] == 'train' for _, row in legal)))]
         return planned
     rng = random.Random(config['seed'])
@@ -131,29 +139,33 @@ def export(config: dict, *, dry_run: bool = False, smoke: bool = False) -> dict:
 
         for split, records in originals.items():
             if smoke:
-                records = [row for row in records if row.get('quality_status') == 'info'][:40]
-            pool = [row for row in records if row.get('quality_status') == 'info']
+                records = records[:40]
+            pool = list({row['source_id']: row for row in records if row.get('source_id')}.values())
             for row in records:
                 emit(split, 'single_line', row, resolve_image(source, row['image_path']))
             for group, (lo, hi) in RANGES.items():
-                rng.shuffle(pool)
-                offset = made = 0
-                quota = min(quotas[group], 1) if smoke else quotas[group]
-                while made < quota:
-                    n = rng.randint(lo, hi)
-                    batch = pool[offset:offset+n]
-                    if len(batch) < n:
+                made = 0
+                quota = min(quotas[split][group], 1) if smoke else quotas[split][group]
+                seen, unusable = set(), set()
+                for _ in range(quota * 12):
+                    if made == quota or len(pool) < lo:
                         break
-                    offset += n
-                    images = []
+                    n = rng.randint(lo, min(hi, len(pool)))
+                    batch = rng.sample(pool, n)
+                    key = tuple(row['source_id'] for row in batch)
+                    if key in seen or any(k in unusable for k in key):
+                        continue
+                    seen.add(key)
+                    images, warnings = [], []
                     for row in batch:
                         try:
                             with Image.open(resolve_image(source, row['image_path'])) as crop:
                                 image, metric = normalize_line(crop, LINE)
-                            if metric['warnings'] or metric['crop_diagnostic']['severity'] != 'info':
-                                raise ValueError('crop_quality_warning')
                             images.append(image)
+                            warnings.append(sorted(set(metric['warnings'] + metric['crop_diagnostic']['reasons'])))
                         except (OSError, ValueError) as exc:
+                            unusable.add(row['source_id'])
+                            pool = [candidate for candidate in pool if candidate['source_id'] not in unusable]
                             rejections[str(exc)] += 1
                             break
                     if len(images) != n:
@@ -169,19 +181,24 @@ def export(config: dict, *, dry_run: bool = False, smoke: bool = False) -> dict:
                         y += image.height + 9
                     emit(split, group, {'split': split, 'text': '\n'.join(row['text'] for row in batch),
                         'source_ids': [row['source_id'] for row in batch], 'line_boxes_xyxy': boxes,
-                        'line_count': n, 'gt_verification': 'derived_from_provider_trusted_source'}, canvas)
+                        'line_count': n, 'line_quality_warnings': warnings,
+                        'gt_verification': 'derived_from_provider_trusted_source'}, canvas)
                     made += 1
                 if made < quota:
                     rejections[f'{split}:{group}:shortfall'] += quota-made
         for image, row in (legal[:1] if smoke else legal):
             emit(row['split'], 'legal_full_page', row, image)
-        sample_weights([r['sample_group'] for r in rows['train']], profiles, profile)
+        try:
+            sample_weights([r['sample_group'] for r in rows['train']], profiles, profile)
+        except ValueError as exc:
+            raise ValueError(f'{exc}. Generation rejections and shortfalls: {dict(rejections)}') from exc
         for split, records in rows.items():
             (stage / f'{split}.jsonl').write_text(''.join(json.dumps(r, ensure_ascii=False)+'\n' for r in records), encoding='utf-8')
         validation = check_data(stage)
         if not validation['ok']:
             raise ValueError(f'Unified dataset failed validation: {validation["splits"]}')
         planned['counts'] = {s: dict(Counter(r['sample_group'] for r in v)) for s, v in rows.items()}
+        planned['shortfalls'] = {k: v for k, v in rejections.items() if k.endswith(':shortfall')}
         planned['split_limitation'] = 'Document/writer isolation cannot be inferred where identifiers are unavailable.'
         for name, payload in [('sampling_config', {'profiles': profiles, 'profile': profile}),
                               ('dataset_manifest', planned), ('quality_report', {'rejections': dict(rejections), 'validation': validation})]:
