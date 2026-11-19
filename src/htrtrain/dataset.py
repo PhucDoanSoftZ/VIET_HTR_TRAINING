@@ -1,12 +1,10 @@
 """Local JSONL validation, split integrity and shared image preprocessing."""
 from __future__ import annotations
-
 from collections import Counter
 from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path, PurePosixPath
-
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 class DatasetError(ValueError):
@@ -20,6 +18,9 @@ class Sample:
     line: int
     source_id: str | None = None
     proper_names: tuple[str, ...] = ()
+    source_ids: tuple[str, ...] = ()
+    gt_verification: str | None = None
+    quality_status: str | None = None
 
 def jsonl_path(root: Path, split: str) -> Path:
     if split not in {"train", "validation", "test"}:
@@ -80,7 +81,16 @@ def iter_split(root: Path, split: str):
             names = row.get("proper_names", [])
             if not isinstance(names, list) or not all(isinstance(name, str) and name.strip() and name in text for name in names):
                 raise DatasetError(f"{split}:{line}: proper_names must be a list of nonempty substrings of text")
-            yield Sample(resolve_image(root, image), text, split, line, origin, tuple(names))
+            sources = row.get('source_ids', [])
+            if not isinstance(sources, list) or not all(isinstance(x, str) and x for x in sources):
+                raise DatasetError(f"{split}:{line}: source_ids must be a list of nonempty strings")
+            status = row.get('gt_verification')
+            if status is not None and not isinstance(status, str):
+                raise DatasetError(f"{split}:{line}: gt_verification must be a string")
+            quality = row.get('quality_status')
+            if quality is not None and not isinstance(quality, str):
+                raise DatasetError(f"{split}:{line}: quality_status must be a string")
+            yield Sample(resolve_image(root, image), text, split, line, origin, tuple(names), tuple(sources), status, quality)
 
 def load_split(root: Path, split: str, limit: int | None = None) -> list[Sample]:
     from itertools import islice
@@ -112,6 +122,10 @@ def check_data(root: Path, splits=("train", "validation", "test"), limit=None, s
         provenance = 0
         split_fingerprint = hashlib.sha256()
         for sample in samples:
+            if split == 'train' and sample.gt_verification and sample.gt_verification.startswith('provisional'):
+                issues['provisional_train_gt'] += 1
+            if split == 'train' and sample.quality_status in ('reject', 'rejected'):
+                issues['rejected_train_crop'] += 1
             if not sample.image.is_file():
                 issues["missing_image"] += 1
                 continue
@@ -121,13 +135,18 @@ def check_data(root: Path, splits=("train", "validation", "test"), limit=None, s
                 issues["corrupt_image"] += 1
                 continue
             payload = [digest, sample.text, sample.source_id, sample.proper_names]
+            if sample.source_ids:
+                payload.append(sample.source_ids)
             split_fingerprint.update(json.dumps(payload, ensure_ascii=False).encode())
             split_fingerprint.update(b"\n")
             keys = [("pixels", digest), ("path", str(sample.image))]
+            sources = set(sample.source_ids)
             if sample.source_id:
-                keys.append(("source", sample.source_id))
+                sources.add(sample.source_id)
+            if sources:
+                keys.extend(("source", source) for source in sources)
                 provenance += 1
-            duplicate_splits = {seen[k] for k in keys if k in seen}
+            duplicate_splits = {seen[k] for k in keys if k in seen and (k[0] != 'source' or seen[k] != split)}
             if duplicate_splits:
                 issues["duplicate_or_leakage"] += 1
                 if duplicate_splits - {split}:

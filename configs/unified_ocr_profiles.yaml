@@ -1,0 +1,19 @@
+source: data/v1_viethtr
+output: data/ocr_unified_v1
+seed: 3407
+profile: viet_only
+max_canvas_pixels: 1048576
+quotas:
+  composite_7_10: 40
+  composite_11_13: 20
+profiles:
+  full:
+    single_line: 0.20
+    composite_7_10: 0.40
+    composite_11_13: 0.30
+    legal_full_page: 0.10
+  viet_only:
+    single_line: 0.25
+    composite_7_10: 0.45
+    composite_11_13: 0.30
+    legal_full_page: 0.0
